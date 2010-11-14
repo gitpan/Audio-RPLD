@@ -1,3 +1,7 @@
+v. 0.1beta1 (0.002) - thu Sep 30 2010 20:56 CEST
+	* fixed small bug in PLE parser
+	* Added support to connect to default server
+
 v. 0.1beta0 (0.001) - Sat Sep 18 2010 21:14 CEST
 	* Project forked from Romie project.
 	* Wrote POD

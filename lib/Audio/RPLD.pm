@@ -24,7 +24,7 @@ package Audio::RPLD;
 use strict;
 use vars qw($VERSION @ISA);
 
-$VERSION     = 0.001;
+$VERSION     = 0.002;
 @ISA         = qw();
 
 #use IO::Socket::UNIX;
@@ -232,6 +232,10 @@ sub connect {
  my ($e, $addr, $type, $port) = @_;
  my $sock;
 
+ if ( (!defined($addr) || $addr eq '') && (!defined($type) || $type eq '') && (!defined($port) || $port eq '') ) {
+  return $e->connect_default();
+ }
+
  unless ( $type ) {
   if ( $addr =~ m#/# ) {
    $type = 'UNIX';
@@ -271,6 +275,30 @@ Connect to a server. You must not call this on a already connected object.
 
 =cut
 
+sub connect_default {
+ my ($e) = @_;
+ my $home = $ENV{'HOME'} || $ENV{'HOMEDRIVE'}.$ENV{'HOMEPATH'} || '/NXHOMEDIR';
+ my @locations = ($home.'/.rpld', qw(/tmp/.rpld /tmp/rpld /var/run/rpld.sock), '.rpld', 'localhost', '::rpld');
+
+ if ( defined($e->[0]) ) {
+  return undef;
+ }
+
+ while (!defined($e->[0]) && scalar(@locations)) {
+  $e->connect(shift(@locations));
+ }
+
+ return defined($e->[0]) ? $e : undef;
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>connect_default()
+
+Connect to a server by trying default locations. You must not call this on a already connected object.
+
+=cut
+
 sub disconnect {
  my ($e) = @_;
 
@@ -284,6 +312,20 @@ sub disconnect {
 =head3 $res = $rpld-E<gt>disconnect()
 
 Disconnect from the server. You may use $rpld->connect() again to connect to a (new/different) server.
+
+=cut
+
+sub is_connected {
+ my ($e) = @_;
+
+ return defined($e->[0]) ? $e : undef;
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>is_connected()
+
+Returns true value if the object is currently connected to a server or undef if not.
 
 =cut
 
@@ -548,7 +590,7 @@ sub p_ple {
   $r->{'uuid'}    = $3 if $3;
  }
 
- if ( $p[10] =~ m#^(0x[0-9a-fA-F]{8})/(\d+)$# ) {
+ if ( $p[9] =~ m#^(0x[0-9a-fA-F]{8})/(\d+)$# ) {
   $r->{'meta'}->{'discid'}      = hex($1) if $1;
   $r->{'meta'}->{'tracknumber'} = int($2) if $2;
   $r->{'meta'}->{'discid'} = undef unless $r->{'meta'}->{'discid'};

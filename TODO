@@ -1,4 +1,5 @@
 Things we need to do:
+ * Add support to auto connect to default server locations.
  * Add support for auth/unauth
  * Add support for import/export
 
