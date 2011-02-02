@@ -1,4 +1,4 @@
-#      Copyright (C) Philipp 'ph3-der-loewe' Schafft - 2009-2010
+#      Copyright (C) Philipp 'ph3-der-loewe' Schafft - 2009-2011
 #
 #  This file is part of Audio::RPLD,
 #  a library to access the RoarAudio PlayList Daemon from Perl.
@@ -24,7 +24,7 @@ package Audio::RPLD;
 use strict;
 use vars qw($VERSION @ISA);
 
-$VERSION     = 0.002;
+$VERSION     = 0.003;
 @ISA         = qw();
 
 #use IO::Socket::UNIX;
@@ -95,6 +95,12 @@ Use a DECnet socket to connect to the server (currently not supported because th
 
 Use a INET (IPv4) socket to connect to the server.
 
+=item #SOCKET
+
+Use a already connected socket as connection to the server. This can for example be a object opened
+with a SSL/TLS or proxy module or any other bidirectional IO object. Object is passed
+as $addr parameter.
+
 =item a value of undef
 
 Use Autodetection.
@@ -113,6 +119,10 @@ A Playlist to use. This can be a integer to use the playlist ID (which is prefer
 =item $vol
 
 A volume. If this is an integer the volume is in range 0 to 65535 (recommended). If it's a string and suffixed by a '%' it is in range 0 to 100. A value of zero always means total silence.
+
+=item $likeness
+
+A floating point describing how much the user likes a song.
 
 =item $name
 
@@ -164,6 +174,22 @@ If the startup pointer is set the song it points to is added once at startup of 
 The temp pointer is a pointer for user defined jobs. It is the only pointer which is not global (shared with all clients) but a client local pointer. The application can use it for whatever it wants to use it for.
 
 =back
+
+=item Numerical Index
+
+This is a numerical index of the entry. It's format is num:N where N is the index starting with zero. For example num:0 is the first entry in playlist, num:15 is the 16th entry.
+
+=item Likeness Index
+
+This is like the normal numerical index just uses the likeness values of the entrys. This is hardly of use to the user and mainly for internal use. Syntax is likeness:F with F the floating point index.
+
+=item Random Entry
+
+A Random entry can be selected by using random:[PLI]. PLI is a optional parameter. It musst be the ID of the playlist to select entry from. If no playlist is given the current one is used.
+
+=item Random liked Entry
+
+This is like normal random entry but prioritized by the value set with LIKE and DISLIKE commands. Syntax is: randomlike:[PLI].
 
 =back
 
@@ -224,7 +250,7 @@ sub new {
 
 =head3 $rpld = Audio::RPLD-E<gt>new([$addr[, $type[, $port]]])
 
-This method creates a new Audio::RPLD object. If arguments are passed they are directly passed to a call to the connect method (see below) in oder to connect to the server. If this fails undef is returned. If no arguments are given you need to connect the object to the server via the connect method later on your own.
+This method creates a new Audio::RPLD object. If arguments are passed they are directly passed to a call to the connect method (see below) in order to connect to the server. If this fails undef is returned. If no arguments are given you need to connect the object to the server via the connect method later on your own.
 
 =cut
 
@@ -237,7 +263,9 @@ sub connect {
  }
 
  unless ( $type ) {
-  if ( $addr =~ m#/# ) {
+  if ( ref($addr) ne '' ) {
+   $type = '#SOCKET';
+  } elsif ( $addr =~ m#/# ) {
    $type = 'UNIX';
   } elsif ( $addr =~ m#::# ) {
    $type = 'DECnet';
@@ -248,7 +276,9 @@ sub connect {
 
  $type = uc($type);
 
- if ( $type eq 'UNIX' ) {
+ if ( $type eq '#SOCKET' ) {
+  $sock = $addr;
+ } elsif ( $type eq 'UNIX' ) {
   require IO::Socket::UNIX;
   import IO::Socket::UNIX;
   $sock = IO::Socket::UNIX->new($addr);
@@ -278,10 +308,17 @@ Connect to a server. You must not call this on a already connected object.
 sub connect_default {
  my ($e) = @_;
  my $home = $ENV{'HOME'} || $ENV{'HOMEDRIVE'}.$ENV{'HOMEPATH'} || '/NXHOMEDIR';
- my @locations = ($home.'/.rpld', qw(/tmp/.rpld /tmp/rpld /var/run/rpld.sock), '.rpld', 'localhost', '::rpld');
+ my @locations = ($home.'/.rpld', qw(/tmp/.rpld /tmp/rpld /var/run/rpld.sock .rpld localhost ::rpld));
+ my $server;
 
  if ( defined($e->[0]) ) {
   return undef;
+ }
+
+ $server = $ENV{'RPLD_SERVER'};
+
+ if ( defined($server) && length($server) ) {
+  return $e->connect($server);
  }
 
  while (!defined($e->[0]) && scalar(@locations)) {
@@ -554,7 +591,7 @@ sub p_ple {
  local $_;
 
  #0       1        2     3     4      5         6       7    8                                                                                  9           10
- #unknown=00:00:00=ALBUM=TITLE=ARTIST=PERFORMER=VERSION=FILE=long:0xBED9000000000373/short:0xBE0003AA/uuid:0c26ea9c-5f37-48e3-b338-8895b1a84dfe=0xDISCID/TN=GENRE(GID)
+ #unknown=00:00:00=ALBUM=TITLE=ARTIST=PERFORMER=VERSION=FILE=long:0xBED9000000000373/short:0xBE0003AA/uuid:0c26ea9c-5f37-48e3-b338-8895b1a84dfe=0xDISCID/TN=GENRE(GID)=LIKENESS
 
 # $r->{'raw'} = {'data' => $ple, 'splited' => \@p};
 
@@ -604,6 +641,10 @@ sub p_ple {
    $r->{'meta'}->{'genre'}       = $1      if $1;
    $r->{'meta'}->{'genreid'}     = hex($2) if $2;
   }
+ }
+
+ if ( defined($p[11]) ) {
+  $r->{'likeness'} = $p[11]+0;
  }
 
  return $r;
@@ -1203,6 +1244,24 @@ The name of the playlist.
 
 =cut
 
+sub setparentlist {
+ my ($e, $pl) = @_;
+ my $r = $_[0]->cmd('SETPARENTLIST', $e->q_pli($pl));
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>setparentlist($playlist)
+
+Set the parent playlist of the current playlist.
+Setting parent playlist of a list the current one is currently not supported.
+
+=cut
+
 # -- PLE:
 
 =pod
@@ -1483,7 +1542,57 @@ The short GTN for the entry.
 
 The UUID for the entry.
 
+=item likeness (optional)
+
+The likeness value stored by the server.
+This is a float in rage from zero to infinity.
+The bigger the value is the more the song is liked.
+
 =back
+
+=cut
+
+sub like {
+ my ($e, $ple, $likeness) = @_;
+ my @q = ('LIKE', $e->q_ple($ple), ($likeness+0 || 1));
+ my $r = $e->cmd(@q);
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>like($ple[, $likeness])
+
+Tells the server that the user likes this entry.
+Optionally tells the server how much. A value of +1.0 is the default if no value is given.
+This is added to the likeness value stored by the server.
+A value of zero has no effect. A negative value indecates dislikeness.
+See dislike() for more information about dislikeness.
+
+=cut
+
+sub dislike {
+ my ($e, $ple, $likeness) = @_;
+ my @q = ('DISLIKE', $e->q_ple($ple), $likeness+0 || 1);
+ my $r = $e->cmd(@q);
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>dislike($ple[, $likeness])
+
+This is the same as like() just markes a the given entry as disliked.
+Optionally tells the server how much. A value of +1.0 is the default if no value is given.
+The value is subtracted from server's value.
+A value of zero has no effect. A negative value indecates likeness.
+See like() for more information about likeness.
 
 =cut
 

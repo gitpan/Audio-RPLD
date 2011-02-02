@@ -1,3 +1,11 @@
+v. 0.1beta2 (0.003) - ?
+	* Fixed typos
+	* Added support for envvar $RPLD_SERVER.
+	* Added info on new EIs (num:, likeness:, random: and randomlike:)
+	* Added support for likeness.
+	* Added support for SETPARENTLIST.
+	* Added support for already connected sockets.
+
 v. 0.1beta1 (0.002) - thu Sep 30 2010 20:56 CEST
 	* fixed small bug in PLE parser
 	* Added support to connect to default server
