@@ -1,4 +1,10 @@
-v. 0.1beta2 (0.003) - ?
+v. 0.1beta3 (0.004) - Sun May 13 2012 16:52 CEST
+	* Added support for new commands:
+	  SETQUEUE, ADDQUEUE, DELQUEUE, ADDHISTORY, DELHISTORY, SHOWIDENTIFIER
+	  (See: #222)
+	* Updated protocol support to match new protocol (Closes: #222)
+
+v. 0.1beta2 (0.003) - Wed Feb 02 2011 18:17 CET
 	* Fixed typos
 	* Added support for envvar $RPLD_SERVER.
 	* Added info on new EIs (num:, likeness:, random: and randomlike:)

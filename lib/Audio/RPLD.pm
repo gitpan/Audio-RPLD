@@ -1,4 +1,4 @@
-#      Copyright (C) Philipp 'ph3-der-loewe' Schafft - 2009-2011
+#      Copyright (C) Philipp 'ph3-der-loewe' Schafft - 2009-2012
 #
 #  This file is part of Audio::RPLD,
 #  a library to access the RoarAudio PlayList Daemon from Perl.
@@ -24,7 +24,7 @@ package Audio::RPLD;
 use strict;
 use vars qw($VERSION @ISA);
 
-$VERSION     = 0.003;
+$VERSION     = 0.004;
 @ISA         = qw();
 
 #use IO::Socket::UNIX;
@@ -112,13 +112,31 @@ Use Autodetection.
 If using a INET socket this is the port number to connect to.
 Use undef (not include in arguments list) to use defaults.
 
-=item $playlist, $playlist_from, $playlist_to
+=item $playlist, $playlist_from, $playlist_to, $history
 
 A Playlist to use. This can be a integer to use the playlist ID (which is preferred), a string to use the playlist name or $any (return value of $rpld->any()) to search thru all playlists and use the first hint. $any is not supported by all commands as it does not make sense for all commands.
 
 =item $vol
 
 A volume. If this is an integer the volume is in range 0 to 65535 (recommended). If it's a string and suffixed by a '%' it is in range 0 to 100. A value of zero always means total silence.
+
+=item $size
+
+A history size. This is an integer or undef. If undef the server's default is used.
+
+=item $backend
+
+The address of a RoarAudio server as used as backend for a queue. If undef the default server will be used.
+
+=item $mixer
+
+The mixer ID of the mixer core which should be used by a queue. If undef the server's default mixer core will be used.
+This should normally be undef.
+
+=item $role
+
+The stream role as used by a queue. This is the name or undef to use rpld's or RoarAudio server's default.
+This is the name of the role not the ID. Common values include "music" and "background_music".
 
 =item $likeness
 
@@ -174,6 +192,8 @@ If the startup pointer is set the song it points to is added once at startup of 
 The temp pointer is a pointer for user defined jobs. It is the only pointer which is not global (shared with all clients) but a client local pointer. The application can use it for whatever it wants to use it for.
 
 =back
+
+As of rpld 0.1rc7 multi queue support was added. To support this pointers can have a queue and client ID suffix. The suffix has the syntax: pointer[queue:client]. Both queue and client can be omitted. If the client ID is omitted the colon (':') can be omitted, too. If both are omitted the brackets ('[]') can also be omitted. Queue defaults to the current client's default queue and client defaults to the current client.
 
 =item Numerical Index
 
@@ -374,7 +394,7 @@ sub read {
 
  $r = readline($e->[0]);
 
- $r =~ s/\r?\n//;
+ $r =~ s/\r?\n$//;
 
  if ( $r eq '.' ) {
   $e->[1] = 0;
@@ -453,7 +473,7 @@ sub cmd {
 
  $e->request($cmd);
  $e->[1] = 1;
- while ($e->read($e)) {}
+ $e->read($e) while $e->[1];
 
  return $e->response();
 }
@@ -476,7 +496,7 @@ sub cmd_data {
 
  $e->request($cmd);
  $e->[1] = 1;
- push(@r, $t) while ($t = $e->read($e));
+ push(@r, $e->read($e)) while $e->[1];
 
  $r[0] = $e->response();
 
@@ -531,7 +551,7 @@ sub any {
 
 =head3 $any = $rpld-E<gt>any()
 
-This function returns a value hat can be used as playlist wildcard.
+This function returns a value that can be used as playlist wildcard.
 
 =cut
 
@@ -650,6 +670,38 @@ sub p_ple {
  return $r;
 }
 
+sub p_playlist {
+ my ($e, $playlist) = @_;
+ my $c;
+ my ($k, $v);
+ local $_;
+
+ $c = {'id' => int($1), 'parent' => int($2), 'name' => $3, 'children' => []};
+ $playlist =~ /^\s*(\d+):\s*\[([^\]]+)\]\s*"(.+?)"$/ or return undef;
+ $c = {'id' => int($1), 'name' => $3, 'children' => []};
+ foreach (split(/, /, $2)) {
+  ($k, $v) = /^([^:]+):\s(.+)$/;
+  $k =~ tr/ /_/;
+
+  if ( $k eq 'backend' ) {
+   $v =~ s/^"(.+)"$/$1/;
+  } elsif ( $k eq 'volume' ) {
+   $v =~ s/^(\d+)\/65535$/$1/;
+   $v = int($v);
+  } elsif ( $k eq 'history' ) {
+   $v = int($v);
+  } elsif ( $k eq 'history_size' ) {
+   $v = int($v);
+  } elsif ( $k eq 'mixer' ) {
+   $v = int($v);
+   $v = undef if $v == -1;
+  }
+  $c->{lc($k)} = $v;
+ }
+
+ return $c;
+}
+
 #-------------
 # define hi-level functions
 
@@ -711,7 +763,11 @@ sub restore {
 
 =head3 $res = $rpld-E<gt>restore()
 
-Restore from disk. This is normally done at startup time (by rpld itself). You should not call this again if the server already restored it's state because this may result in undefined behavior. Current behavior of rpld is that it adds everything to the current state resulting in duplicates. This may change in future.
+Restore from disk. This is normally done at startup time (by rpld itself).
+You should not call this again if the server already restored it's state because this may result in undefined behavior.
+Current behavior of rpld is that it forgets the complete current state and loads the new state.
+This was changed in version 0.1rc7. Before version 0.1rc7 it added everything to the current state resulting in duplicates.
+This may change in future.
 
 =cut
 
@@ -800,6 +856,26 @@ sub isplaying {
 =head3 $res = $rpld-E<gt>isplaying()
 
 Return a true value if we are currently playing.
+
+=cut
+
+sub showidentifier {
+ my ($e) = @_;
+ my $q = $e->cmd_data('SHOWIDENTIFIER');
+
+ return undef unless $e->is_ok($q->[0]);
+
+ return $q->[1];
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>showidentifier()
+
+Return a identifier for the currently running stream at the server.
+The format of this identifier is undefined.
+This should not be used.
+Using this value can result in race conditions.
 
 =cut
 
@@ -1160,8 +1236,7 @@ sub listplaylists {
  return undef unless $e->is_ok(shift(@{$q}));
 
  while (($_ = shift(@{$q}))) {
-  /^\s*(\d+):\s*\[parent:\s*(\d+)\]\s*"(.+?)"$/ or next;
-  $c = {'id' => int($1), 'parent' => int($2), 'name' => $3, 'children' => []};
+  $c = p_playlist($e, $_);
   $idcache{$c->{'id'}} = $c;
   push(@r, $c);
  }
@@ -1203,6 +1278,35 @@ The name of the playlist.
 
 A arrayref with the IDs of the children playlists.
 
+=item history_size (optional)
+
+The size of the history if this is a history.
+This is the number of PLEs this playlist will store before old entrys
+becomes deleted automatically.
+
+=item history (optional)
+
+The PLI of the playlist used as history if this is a queue.
+
+=item volume (optional)
+
+The playback volume if this is a queue.
+
+=item backend (optional)
+
+The backend used by this queue (if this is a queue).
+The backend is the name (server address) of the RoarAudio server.
+
+=item mixer (optional)
+
+The ID of the Mixer used on the RoarAudio server. -1 for default.
+Only set if this is a queue.
+
+=item role (optional)
+
+The Stream role used by this queue. Often "music" or "backround_music".
+Only if this is a queue.
+
 =back
 
 Parent/child information should be used to display a tree to the user.
@@ -1215,32 +1319,15 @@ sub showlist {
 
  return undef unless $e->is_ok($q->[0]);
 
- $q->[1] =~ /^\s*(\d+):\s*\[parent:\s*(\d+)\]\s*"(.+?)"$/ or return undef;
-
- return {'id' => int($1), 'parent' => int($2), 'name' => $3};
+ return p_playlist($e, $q->[1]);
 }
 
 =pod
 
 =head3 $res = $rpld-E<gt>showlist($playlist)
 
-Returns a hashref with information about the given playlist:
-
-=over
-
-=item id
-
-The ID of the playlist.
-
-=item parent
-
-The ID of the parent playlist.
-
-=item name
-
-The name of the playlist.
-
-=back
+Returns a hashref with information about the given playlist.
+The structure of the hashref is the same as for listplaylist().
 
 =cut
 
@@ -1259,6 +1346,117 @@ sub setparentlist {
 
 Set the parent playlist of the current playlist.
 Setting parent playlist of a list the current one is currently not supported.
+
+=cut
+
+# --- Queues:
+
+=pod
+
+=head2 Queue management
+
+=cut
+
+sub setqueue {
+ my ($e, $pl) = @_;
+ my $r = $_[0]->cmd('SETQUEUE', $e->q_pli($pl));
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>setqueue($playlist)
+
+Select the given playlist as queue. After selecting a queue it becomes the default queue for the current connection.
+
+=cut
+
+sub delqueue {
+ my ($e, $pl) = @_;
+ my $r = $_[0]->cmd('DELQUEUE', $e->q_pli($pl));
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>delqueue($playlist)
+
+Delete a queue from a playlist. The playlist will not be removed just the queue.
+
+=cut
+
+sub addqueue {
+ my ($e, $pl, $history, $backend, $mixer, $role) = @_;
+ my @q = ('ADDQUEUE', $e->q_pli($pl), 'WITH HISTORY', $e->q_pli($history));
+ my $r;
+
+ push(@q, ('WITH BACKEND', $e->q_str($backend))) if defined $backend;
+ push(@q, ('MIXER', int($mixer))) if defined($mixer) && $mixer > 0;
+ push(@q, ('WITH ROLE', $e->q_str($role))) if defined $role;
+
+ $r = $e->cmd(@q);
+
+ return undef unless defined($r);
+
+ return $e->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>addqueue($playlist, $history[, $backend[, $mixer[, $role]]])
+
+Add a queue tp playlist $pl with the playlist $history as history.
+Optionally the server to connect to can be given as $backend and the mixer to connect to as $mixer.
+In addition the stream role can be set using $role.
+
+=cut
+
+# --- Historys:
+
+=pod
+
+=head2 History management
+
+=cut
+
+sub addhistory {
+ my ($e, $pl, $size) = @_;
+ my $r = $_[0]->cmd('ADDHISTORY', $e->q_pli($pl), defined($size) ? ('SIZE', int($size)) : ());
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>addhistory($playlist, [$size])
+
+Add a history to the playlist. The history size can be set using the optional argument $size.
+If not given the server's default will be used.
+
+=cut
+
+sub delhistory {
+ my ($e, $pl) = @_;
+ my $r = $_[0]->cmd('DELHISTORY', $e->q_pli($pl));
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>delhistory($playlist)
+
+Delete a history from a playlist. The playlist will not be removed just the history.
 
 =cut
 
@@ -1651,6 +1849,12 @@ sub showpointer {
     $plent->{'shortid'} = $plent->{'raw'};
    } elsif ( $plent->{'raw'} =~ /^uuid:/ ) {
     $plent->{'uuid'} = $plent->{'raw'};
+   } elsif ( $plent->{'raw'} =~ /^random:(\d+)$/ ) {
+    $plent->{'playlist'} = int($1);
+    $plent->{'random'} = $plent->{'raw'};
+   } elsif ( $plent->{'raw'} =~ /^randomlike:(\d+)$/ ) {
+    $plent->{'playlist'} = int($1);
+    $plent->{'randomlike'} = $plent->{'raw'};
    }
   }
  }
@@ -1688,6 +1892,19 @@ If the pointer contains an information about the playlist entries short GTN this
 
 If the pointer contains an information about the playlist entries UUID this UUID.
 
+=item random (optional)
+
+If the pointer points to a random song within a playlist this contains the corresponding search string.
+
+=item randomlike (optional)
+
+If the pointer points to a random song (respecting likeness) within a playlist this
+contains the corresponding search string.
+
+=item playlist (optional)
+
+If the pointer contains a playlist hint this contains the playlist ID.
+
 =back
 
 =cut
@@ -1703,7 +1920,7 @@ If the pointer contains an information about the playlist entries UUID this UUID
 
 =head1 LICENSE
 
-      Copyright (C) Philipp 'ph3-der-loewe' Schafft - 2009-2010
+      Copyright (C) Philipp 'ph3-der-loewe' Schafft - 2009-2012
   
   This file is part of Audio::RPLD,
   a library to access the RoarAudio PlayList Daemon from Perl.
@@ -1726,17 +1943,7 @@ If the pointer contains an information about the playlist entries UUID this UUID
 =cut
 
 __DATA__
-Commands:
   HELP
-  SHOWIDENTIFIER
-  ADD2Q entry
-  DELFQ identifier
-  QUIT
   IMPORT [{"Name"|ID}] {TO|FROM} {STDIN|STDOUT|"Filename"} [AS {RPLD|PLS|M3U|VCLT|XSPF|PLAIN}]
   EXPORT [{"Name"|ID}] {TO|FROM} {STDIN|STDOUT|"Filename"} [AS {RPLD|PLS|M3U|VCLT|XSPF|PLAIN}]
-Commands to fix:
-  SETPARENTLIST [OF {"Name"|ID}] [TO] {"Name"|ID}
-Commands to implement:
-  SEARCHPLE "search string" [{AS|IN} {ALL|TITLE|ARTIST|VERSION|FILENAME|TAG:"Tagname"}] [FROM {"Name"|ID}]
-  STORE {NONE|CONFIG|ALL|QUEUE|PLAYLIST {"Name"|ID}}
-  RESTORE {NONE|CONFIG|ALL|QUEUE|PLAYLIST {"Name"|ID}}
+  UNAUTH [ACCLEV] {BY n|TO {n|"name"}}
