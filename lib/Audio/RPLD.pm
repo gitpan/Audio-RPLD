@@ -24,7 +24,7 @@ package Audio::RPLD;
 use strict;
 use vars qw($VERSION @ISA);
 
-$VERSION     = 0.004;
+$VERSION     = 0.005;
 @ISA         = qw();
 
 #use IO::Socket::UNIX;
@@ -201,11 +201,11 @@ This is a numerical index of the entry. It's format is num:N where N is the inde
 
 =item Likeness Index
 
-This is like the normal numerical index just uses the likeness values of the entrys. This is hardly of use to the user and mainly for internal use. Syntax is likeness:F with F the floating point index.
+This is like the normal numerical index just uses the likeness values of the entries. This is hardly of use to the user and mainly for internal use. Syntax is likeness:F with F the floating point index.
 
 =item Random Entry
 
-A Random entry can be selected by using random:[PLI]. PLI is a optional parameter. It musst be the ID of the playlist to select entry from. If no playlist is given the current one is used.
+A Random entry can be selected by using random:[PLI]. PLI is a optional parameter. It must be the ID of the playlist to select entry from. If no playlist is given the current one is used.
 
 =item Random liked Entry
 
@@ -314,6 +314,9 @@ sub connect {
 
  $e->[0] = $sock;
 
+ # do a minimal identify.
+ $e->identify();
+
  return $e;
 }
 
@@ -383,6 +386,62 @@ sub is_connected {
 =head3 $res = $rpld-E<gt>is_connected()
 
 Returns true value if the object is currently connected to a server or undef if not.
+
+=cut
+
+sub identify {
+ my ($e, %opts) = @_;
+ my @q = ('IDENTIFY');
+ my %paratypes = (
+  'name' => 'string',
+  'nodename' => 'string',
+  'pid' => 'int',
+  'hostid' => 'int',
+ );
+ my $type;
+ my $val;
+ my $r;
+ local $_;
+
+ if (!defined($opts{'name'})) {
+  $opts{'name'} =  $0;
+  $opts{'name'} =~ s#^.*/([^/]+)$#$1#;
+ }
+
+ $opts{'pid'} ||= $$;
+
+ foreach (keys %opts) {
+  return undef if ! exists $paratypes{lc($_)};
+  $type = $paratypes{lc($_)};
+  if ( $type eq 'string' ) {
+   $val = $e->q_str($opts{$_});
+  } elsif ( $type eq 'int' ) {
+   $val = int($opts{$_});
+  } else { # this can never happen.
+   die 'Memory or CPU error';
+  }
+  push(@q, 'WITH', uc($_), $val);
+ }
+
+ $r = $e->cmd(@q);
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>identify([%options])
+
+This identifies the process at the server. An optional list of options is taken.
+Each key-value pair is send to the server as it is.
+
+Currently suported keys are: name, pid, nodename and hostid.
+
+This command is send automatically at connect. You only need to call this manually if
+want to set one of those options. It is recommended to do this at least for the
+application name.
 
 =cut
 
@@ -482,6 +541,7 @@ sub cmd_data {
  my ($e, $cmd, @args) = @_;
  my $t;
  my @r = (undef);
+ my $ret;
 
  return undef unless $e->[1] == 0;
 
@@ -496,7 +556,10 @@ sub cmd_data {
 
  $e->request($cmd);
  $e->[1] = 1;
- push(@r, $e->read($e)) while $e->[1];
+ while ($e->[1]) {
+  $ret = $e->read($e);
+  push(@r, $ret) if defined $ret;
+ }
 
  $r[0] = $e->response();
 
@@ -697,6 +760,31 @@ sub p_playlist {
    $v = undef if $v == -1;
   }
   $c->{lc($k)} = $v;
+ }
+
+ return $c;
+}
+
+# This is very similar to p_playlist(). Maybe they should be merged.
+sub p_client {
+ my ($e, $client) = @_;
+ my $c;
+ my ($k, $v);
+ local $_;
+
+ $client =~ /^\s*(\d+):\s*\[([^\]]+)\]\s*"(.+?)"$/ or return undef;
+ $c = {'id' => int($1), 'name' => $3};
+ foreach (split(/, /, $2)) {
+  ($k, $v) = /^([^:]+):\s(.+)$/;
+  $k =~ tr/ /_/;
+  $k = lc($k);
+
+  if ( $k eq 'protocol' || $k eq 'nodename' ) {
+   $v =~ s/^"(.+)"$/$1/;
+  } elsif ( $k eq 'pid' || $k eq 'hostid' ) {
+   $v = int($v);
+  }
+  $c->{$k} = $v;
  }
 
  return $c;
@@ -1023,6 +1111,25 @@ This is the same as $rpld->listple() expect that the default playlist is the Mai
 
 =cut
 
+sub showqueue {
+ my ($e, $pl) = @_;
+ my $q = $e->cmd_data('SHOWQUEUE', defined($pl) ? ($e->q_pli($pl)) : ());
+
+ return undef unless $e->is_ok($q->[0]);
+
+ return p_playlist($e, $q->[1]);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>showqueue([$playlist])
+
+Returns a hashref with information about the given list or the current queue if no list is given.
+The structure of the hashref is the same as for listplaylist().
+This function is the same as showlist() but returns the current queue as default of no list is given.
+
+=cut
+
 =pod
 
 =head2 Volume control
@@ -1281,7 +1388,7 @@ A arrayref with the IDs of the children playlists.
 =item history_size (optional)
 
 The size of the history if this is a history.
-This is the number of PLEs this playlist will store before old entrys
+This is the number of PLEs this playlist will store before old entries
 becomes deleted automatically.
 
 =item history (optional)
@@ -1304,7 +1411,7 @@ Only set if this is a queue.
 
 =item role (optional)
 
-The Stream role used by this queue. Often "music" or "backround_music".
+The Stream role used by this queue. Often "music" or "background_music".
 Only if this is a queue.
 
 =back
@@ -1411,7 +1518,7 @@ sub addqueue {
 
 =head3 $res = $rpld-E<gt>addqueue($playlist, $history[, $backend[, $mixer[, $role]]])
 
-Add a queue tp playlist $pl with the playlist $history as history.
+Add a queue to playlist $pl with the playlist $history as history.
 Optionally the server to connect to can be given as $backend and the mixer to connect to as $mixer.
 In addition the stream role can be set using $role.
 
@@ -1672,7 +1779,7 @@ The name of the used codec.
 
 =item length (optional)
 
-The playback length in sec.
+The playback length in seconds.
 
 =item file
 
@@ -1767,7 +1874,7 @@ sub like {
 Tells the server that the user likes this entry.
 Optionally tells the server how much. A value of +1.0 is the default if no value is given.
 This is added to the likeness value stored by the server.
-A value of zero has no effect. A negative value indecates dislikeness.
+A value of zero has no effect. A negative value indicates dislikeness.
 See dislike() for more information about dislikeness.
 
 =cut
@@ -1786,10 +1893,10 @@ sub dislike {
 
 =head3 $res = $rpld-E<gt>dislike($ple[, $likeness])
 
-This is the same as like() just markes a the given entry as disliked.
+This is the same as like() just marks a the given entry as disliked.
 Optionally tells the server how much. A value of +1.0 is the default if no value is given.
 The value is subtracted from server's value.
-A value of zero has no effect. A negative value indecates likeness.
+A value of zero has no effect. A negative value indicates likeness.
 See like() for more information about likeness.
 
 =cut
@@ -1824,6 +1931,25 @@ sub setpointer {
 =head3 $res = $rpld-E<gt>setpointer($pointer, $ple[, $playlist])
 
 Set the given pointer to the given playlist entry. If no playlist is given the currently selected one is used.
+
+=cut
+
+sub unsetpointer {
+ my ($e, $pointer) = @_;
+ my $r;
+
+ $r = $_[0]->cmd('UNSETPOINTER', uc($pointer));
+
+ return undef unless defined($r);
+
+ return $_[0]->is_ok($r);
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>unsetpointer($pointer)
+
+Unset the given pointer.
 
 =cut
 
@@ -1866,7 +1992,7 @@ sub showpointer {
 
 =head3 $res = $rpld-E<gt>showpointer([$pointer])
 
-Returns informations about the given or all pointers.
+Returns information about the given or all pointers.
 
 The return value is a hashref with keys of the pointer names.
 The values for those keys are a hashref containing information on the corresponding pointer.
@@ -1909,9 +2035,72 @@ If the pointer contains a playlist hint this contains the playlist ID.
 
 =cut
 
+# -- CLIENTS:
+
+=pod
+
+=head2 Clients
+
+=cut
+
+sub listclients {
+ my ($e) = @_;
+ my $q = $e->cmd_data('LISTCLIENTS');
+ my @r;
+ local $_;
+
+ return undef unless defined($q);
+
+ return undef unless $e->is_ok(shift(@{$q}));
+
+ while (($_ = shift(@{$q}))) {
+  push(@r, p_client($e, $_));
+ }
+
+ return \@r;
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>listclients()
+
+Get a list of clients connected to the server.
+This returns a arrayref to a array containing a hashref for each client. This hash contains the following keys:
+
+=over
+
+=item id
+
+The ID of the client.
+
+=item name
+
+The name of the client.
+
+=item protocol
+
+The name of the protocol the client is using.
+
+=item pid (optional)
+
+The process ID of the client.
+
+=item nodename (optional)
+
+The name of the node the client is being conneected from.
+
+=item hostid (optional)
+
+The unix hostid of the node the client is being connected from.
+
+=back
+
+=cut
+
 1;
 
 =pod
+
 =head1 SEE ALSO
 
 =head1 AUTHOR

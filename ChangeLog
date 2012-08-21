@@ -1,3 +1,8 @@
+v. 0.1beta4 (0.005) - Tue Aug 21 2012 21:44 CEST
+	* Updated POD (Closes: RT#77183)
+	* Added support for new commands (Closes: #238)
+	* Corrected error in cmd_data() resulting in dummy playlist entrys displayed.
+
 v. 0.1beta3 (0.004) - Sun May 13 2012 16:52 CEST
 	* Added support for new commands:
 	  SETQUEUE, ADDQUEUE, DELQUEUE, ADDHISTORY, DELHISTORY, SHOWIDENTIFIER
