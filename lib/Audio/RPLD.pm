@@ -24,7 +24,7 @@ package Audio::RPLD;
 use strict;
 use vars qw($VERSION @ISA);
 
-$VERSION     = 0.005;
+$VERSION     = 0.006;
 @ISA         = qw();
 
 #use IO::Socket::UNIX;
@@ -437,7 +437,7 @@ sub identify {
 This identifies the process at the server. An optional list of options is taken.
 Each key-value pair is send to the server as it is.
 
-Currently suported keys are: name, pid, nodename and hostid.
+Currently supported keys are: name, pid, nodename and hostid.
 
 This command is send automatically at connect. You only need to call this manually if
 want to set one of those options. It is recommended to do this at least for the
@@ -452,6 +452,8 @@ sub read {
  return undef unless $e->[1] == 1;
 
  $r = readline($e->[0]);
+
+ die 'EOF from server' unless defined $r;
 
  $r =~ s/\r?\n$//;
 
@@ -503,6 +505,8 @@ sub response {
  return undef unless $e->[1] == 0;
 
  $r = readline($e->[0]);
+
+ die 'EOF from server' unless defined $r;
 
  $r =~ s/\r?\n//;
 
@@ -812,6 +816,143 @@ sub noop {
 Send a NOOP command to the server.
 
 This can be used to ping the server or for keep-alive.
+
+=cut
+
+# -- server info:
+
+=pod
+
+=head2 Server information functions
+
+=cut
+
+sub serverinfo {
+ my ($e) = @_;
+ my $res = {'x' => {}};
+ my $q = $e->cmd_data('SERVERINFO');
+ local $_;
+ my $cur;
+
+ return undef unless $e->is_ok($q->[0]);
+
+ foreach (@{$q}[1..$#{$q}]) {
+  $cur = $res;
+  $cur = $cur->{'x'} if s/^X-//i;
+  if ( /^([A-Z]+)\s+"(.+)"$/ ) {
+   $cur->{lc $1} = $2;
+  } elsif ( /^([A-Z]+)\s+([A-Z]+)\s+"(.+)"$/ ) {
+   $cur->{lc $1} ||= {};
+   $cur->{lc $1}->{lc $2} = $3;
+  } elsif ( /^([A-Z]+)\s+([0-9]+)$/ ) {
+   $cur->{lc $1} = int($2);
+  } elsif ( /^([A-Z]+)\s+(0x[0-9a-fA-F]+)$/ ) {
+   $cur->{lc $1} = hex($2);
+  }
+ }
+
+ return $res;
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>serverinfo()
+
+Send a SERVERINFO command to the server.
+
+This tells basic informations about the server like it's version and location.
+
+The return value is a hashref which contains the following keys (all keys may or may not be set depending on what info the server provides):
+
+=over
+
+=item version
+
+This is the product name, version and vendor information for the server.
+
+=item location
+
+This is the location of the server in a lion readable way e.g. "kitchen".
+
+=item description
+
+This is a description for the server e.g. "Central Media Server"
+
+=item contact
+
+Those are informations on the server administrator. Normally contains nick or real name
+as well as an e-mail address.
+
+=item serial
+
+This is a string with the serial number of the device.
+
+=item address
+
+This contains address data of the device.
+
+=item uiurl
+
+This is an URL to a user interface used to control the server.
+This can be a web interface such as Romie or some other kind of interface.
+All protocols are allowed. This includes telnet:// and ssh://.
+
+=item hostid
+
+This is the UNIX HostID of the server.
+
+=item license
+
+This is the license of the server software or device.
+
+=item build
+
+This is a build stamp. It contains informations on the build.
+This is mostly useful when reporting problems to upstream or the distributor.
+
+=item system
+
+This contains a sub-hash with informations about the server's OS.
+Those informations are normally read via the uname() system call
+by the server software. This means all limits of uname() also apply
+to those data.
+The following keys are know as of this writing:
+
+=over
+
+=item sysname
+
+The operating system's name e.g. "NetBSD".
+
+=item release
+
+The operating system's release.
+
+=item nodename
+
+The node name of as known by the operating system.
+
+=item machine
+
+The host architecture as known by the operating system.
+
+=back
+
+=item x
+
+This is a sub-hash with vendor specific informations.
+The name is based on the "X-"-prefix those keys have.
+The content and format is fully up to the server software.
+However the following keys have been seen in the wild:
+
+=over
+
+=item application
+This key is used by the RoarAudio PlayList Daemon (rpld) and contains it's name.
+
+=back
+
+=back
 
 =cut
 
@@ -1746,6 +1887,207 @@ currently not used playlists (for example only store data for the playlist curre
 
 =cut
 
+#  SEARCHPLE {"search string"|discid:0xdiscid|uuid:UUID|genre:genre|tracknum[ber]:num} [CASE[[ ]SENSITIVE]] [NOT] {{IS|AS}|IN|AT {BEGIN|END} OF} [NOT] {ANY|ALBUM|TITLE|ARTIST|PERFORMER|VERSION|FILENAME|DISCID|UUID|GENRE|TRACKNUM[BER]|TAG:"Tagname"} [FROM {"Name"|ID|ANY [BUT {QUEUES|HISTORIES}]...}]
+sub searchple {
+ my ($e, $needle, $op, $src, $pli, $opts) = @_;
+ my $q;
+ my @r;
+ my @req = ('SEARCHPLE');
+ my $neg = 0;
+ local $_;
+
+ $opts ||= {};
+
+ $neg = int($opts->{'neg'}) if exists $opts->{'neg'};
+
+ if ( ref($needle) eq 'ARRAY' ) {
+  unshift(@{$needle}, undef) if scalar(@{$needle}) == 1;
+ } else {
+  if ( $needle =~ /^uuid:([0-9a-fA-F-]{36})$/i ) {
+   $needle = ['uuid', $1];
+  } elsif ( $needle =~ /^discid:(0x[0-9a-fA-F]+)$/i ) {
+   $needle = ['discid', $1];
+  } elsif ( $needle =~ /^genre:(\d+)$/i ) {
+   $needle = ['genre', $1];
+  } elsif ( $needle =~ /^tracknum(?:ber)?:(\d+)$/i ) {
+   $needle = ['tracknum', $1];
+  } else {
+   $needle = [undef, $needle];
+  }
+ }
+
+ if ( $op eq 'eq' ) {
+  $op = 'IS';
+ } elsif ( $op eq 'ne' ) {
+  $op = 'IS';
+  $neg ^= 1;
+ } elsif ( $op eq 'in' ) {
+  $op = 'IN';
+ } elsif ( $op eq 'begin' ) {
+  $op = 'AT BEGIN OF';
+ } elsif ( $op eq 'end' ) {
+  $op = 'AT END OF';
+ } else {
+  return undef;
+ }
+
+ if ( !defined($src) ) {
+  $src   = $needle->[0];
+  $src ||= $e->any();
+ }
+
+ if ( ref($src) eq 'SCALAR' ) {
+  $src = ${$src}; # support $any.
+ } elsif ( ref($src) eq 'ARRAY' ) {
+  if ( scalar(@{$src}) == 1 ) {
+   $src = $src->[0];
+  } else {
+   $src = $src->[0].':'.$e->q_str($src->[1]);
+  }
+ } else {
+  if ( defined($needle->[0]) ) {
+   $src = $needle->[0];
+  } else {
+   $src = 'TAG:'.$e->q_str($src);
+  }
+ }
+
+ if ( defined $needle->[0] ) {
+  $needle = $needle->[0].':'.$needle->[1];
+ } else {
+  $needle = $e->q_str($needle->[1]);
+ }
+
+ push(@req, $needle);
+ push(@req, 'CASESENSITIVE') if defined($opts->{'casesensitive'}) && $opts->{'casesensitive'};
+ push(@req, 'NOT') if $neg;
+ push(@req, $op);
+ push(@req, $src);
+ push(@req, 'FROM', $e->q_pli($pli)) if defined $pli;
+ push(@req, 'BUT', 'QUEUES') if defined($opts->{'queues'}) && !$opts->{'queues'};
+ push(@req, 'BUT', 'HISTORIES') if defined($opts->{'histories'}) && !$opts->{'histories'};
+
+ $q = $e->cmd_data(@req);
+ return undef unless $e->is_ok(shift(@{$q}));
+
+ foreach (@{$q}) {
+  push(@r, $e->p_ple($_));
+ }
+
+ return \@r;
+}
+
+=pod
+
+=head3 $res = $rpld-E<gt>searchple($needle, $op, $src, [$pli, [$opts]])
+
+List playlist entries matching a given rule.
+The return value is the same as for $rpld->listple().
+
+This function accepts the following arguments:
+
+=over
+
+=item $needle
+
+The needle is the search term the server will search for.
+It may be a scalar value or a arrayref.
+If an arrayref the array must have one or two elements.
+If the array has two elements the first one is the type of needle
+and the second is the value to search for.
+The supported types depend on the server.
+As of version 0.1.5 RoarAudio PlayList Daemon supports:
+String types, DISCID, UUID, GENRE, TRACKNUM[BER].
+String types are defined with a type of undef.
+If it has only one element the type defaults to undef (string type).
+If a scalar value is given the type is automatically selected
+based on the prefix. If a prefix is found matching one of the known types
+that type is selected. If no such prefix is found the string is used as string
+type. This is handy for user interfaces with only a single "intelligent" search box.
+For non-user input the array form is strongly recommended.
+
+=item $op
+
+This is the operator used to compare needle to the source.
+
+Currently the following options are defined. For negative versions see $opts.
+
+=over
+
+=item eq
+
+The needle must to match the source.
+
+=item ne
+
+The needle must not match the source.
+
+=item in
+
+The needle is found anywhere within the source.
+
+=item begin
+
+The needle is found at the begin of the source.
+
+=item end
+
+The needle is found at the end of the source.
+
+=back
+
+=item $src
+
+This is the source to compare the needle with.
+
+This can be undef, a scalar value, $any or a arrayref.
+
+$any matches any information within the PLE.
+If an arrayref is used the array must consist of one or two elements.
+The first element is the source. The second is the sub-source.
+Valid values depend on the server software.
+As of version 0.1.5 RoarAudio PlayList Daemon supports:
+ALBUM, TITLE, ARTIST, PERFORMER, VERSION, FILENAME, DISCID, UUID, GENRE, TRACKNUM[BER]
+and TAG:"Tagname". Not all of them can be used with all kinds of needles.
+If $src is a scalar value it is interpreted as ['TAG', $src] or [$src]
+depending on the needle.
+If this is undef the source is selected by the type of needle
+with string needles defaulting to $any.
+
+=item $pli (optional)
+
+This is the playlist to search in or $any.
+
+=item $opts (optional)
+
+This is an hashref with options. All options are optional. The following keys are currently defined:
+
+=over
+
+=item neg
+
+If set to a true value the search is inverted.
+
+=item casesensitive
+
+If set to a true value the search is done case sensetive.
+
+=item queues
+
+If set to true value searching in queues is allowed.
+If set to a false but not undef value such searches are disallowed.
+If set to undef the default is used.
+
+=item histories
+
+Does the same as "queues" just for histories.
+
+=back
+
+=back
+
+=cut
+
 sub showple {
  my ($e, $ple, $pli) = @_;
  my @args = ($e->q_ple($ple));
@@ -2133,6 +2475,8 @@ The unix hostid of the node the client is being connected from.
 
 __DATA__
   HELP
-  IMPORT [{"Name"|ID}] {TO|FROM} {STDIN|STDOUT|"Filename"} [AS {RPLD|PLS|M3U|VCLT|XSPF|PLAIN}]
-  EXPORT [{"Name"|ID}] {TO|FROM} {STDIN|STDOUT|"Filename"} [AS {RPLD|PLS|M3U|VCLT|XSPF|PLAIN}]
+  SERVERINFO
+  QUIT
+  IMPORT [{"Name"|ID}] {TO|FROM} {STDIN|STDOUT|"Filename"} [AS {RPLD|PLS|M3U|VCLT|XSPF|PLAIN|URAS}]
+  EXPORT [{"Name"|ID}] {TO|FROM} {STDIN|STDOUT|"Filename"} [AS {RPLD|PLS|M3U|VCLT|XSPF|PLAIN|URAS}]
   UNAUTH [ACCLEV] {BY n|TO {n|"name"}}

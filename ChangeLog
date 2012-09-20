@@ -1,3 +1,8 @@
+v. 0.1beta5 (0.006) - Mon Sep 17 2012 22:56 CEST
+	* Added support for the SERVERINFO command.
+	* Handle EOF from server in a nicer way (Closes: #315)
+	* Added support for the SEARCHPLE command.
+
 v. 0.1beta4 (0.005) - Tue Aug 21 2012 21:44 CEST
 	* Updated POD (Closes: RT#77183)
 	* Added support for new commands (Closes: #238)
